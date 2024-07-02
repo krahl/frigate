@@ -9,7 +9,7 @@ from pydantic import Field
 from typing_extensions import Literal
 
 from frigate.detectors.detection_api import DetectionApi
-from frigate.detectors.detector_config import BaseDetectorConfig
+from frigate.detectors.detector_config import BaseDetectorConfig, ModelTypeEnum
 from frigate.detectors.util import preprocess
 
 logger = logging.getLogger(__name__)
@@ -74,8 +74,15 @@ class ROCmDetector(DetectionApi):
             logger.error("AMD/ROCm: module loading failed, missing ROCm environment?")
             raise
 
+        if detector_config.conserve_cpu:
+            logger.info("AMD/ROCm: switching HIP to blocking mode to conserve CPU")
+            ctypes.CDLL("/opt/rocm/lib/libamdhip64.so").hipSetDeviceFlags(4)
+
+        self.rocm_model_type = detector_config.model.model_type
         path = detector_config.model.path
         mxr_path = os.path.splitext(path)[0] + ".mxr"
+
+
         if path.endswith(".mxr"):
             logger.info(f"AMD/ROCm: loading parsed model from {mxr_path}")
             self.model = migraphx.load(mxr_path)
@@ -84,6 +91,7 @@ class ROCmDetector(DetectionApi):
             self.model = migraphx.load(mxr_path)
         else:
             logger.info(f"AMD/ROCm: loading model from {path}")
+
             if path.endswith(".onnx"):
                 self.model = migraphx.parse_onnx(path)
             elif (
@@ -95,30 +103,39 @@ class ROCmDetector(DetectionApi):
                 self.model = migraphx.parse_tf(path)
             else:
                 raise Exception(f"AMD/ROCm: unknown model format {path}")
+
             logger.info("AMD/ROCm: compiling the model")
+
+
             self.model.compile(
                 migraphx.get_target("gpu"), offload_copy=True, fast_math=True
             )
+
             logger.info(f"AMD/ROCm: saving parsed model into {mxr_path}")
+
             os.makedirs("/config/model_cache/rocm", exist_ok=True)
             migraphx.save(self.model, mxr_path)
+
+        self.model_input_name = self.model.get_parameter_names()[0]
+        self.model_input_shape = tuple(
+            self.model.get_parameter_shapes()[self.model_input_name].lens()
+        )
         logger.info("AMD/ROCm: model loaded")
 
     def detect_raw(self, tensor_input):
-        model_input_name = self.model.get_parameter_names()[0]
-        model_input_shape = tuple(
-            self.model.get_parameter_shapes()[model_input_name].lens()
-        )
-        tensor_input = preprocess(tensor_input, model_input_shape, np.float32)
-
-        detector_result = self.model.run({model_input_name: tensor_input})[0]
-
+        tensor_input = preprocess(tensor_input, self.model_input_shape, np.float32)
+        detector_result = self.model.run({self.model_input_name: tensor_input})[0]
         addr = ctypes.cast(detector_result.data_ptr(), ctypes.POINTER(ctypes.c_float))
+
         # ruff: noqa: F841
         tensor_output = np.ctypeslib.as_array(
             addr, shape=detector_result.get_shape().lens()
         )
 
-        raise Exception(
-            "No models are currently supported for rocm. See the docs for more info."
-        )
+        if self.rocm_model_type == ModelTypeEnum.yolonas:
+            logger.info(f"ROCM output has {tensor_output.shape[2]} boxes")
+            return np.zeros((20, 6), np.float32)
+        else:
+            raise Exception(
+                f"{self.rocm_model_type} is currently not supported for rocm. See the docs for more info on supported models."
+            )
