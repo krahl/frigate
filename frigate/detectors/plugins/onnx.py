@@ -1,11 +1,9 @@
 import logging
 
-import numpy as np
 from typing_extensions import Literal
 
 from frigate.detectors.detection_api import DetectionApi
 from frigate.detectors.detector_config import BaseDetectorConfig
-from frigate.detectors.util import preprocess
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +33,12 @@ class ONNXDetector(DetectionApi):
         self.model = onnxruntime.InferenceSession(path)
         logger.info(f"ONNX: {path} loaded")
 
+    # ruff: noqa: F841
     def detect_raw(self, tensor_input):
-        model_input_name = self.model.get_inputs()[0].name
-        model_input_shape = self.model.get_inputs()[0].shape
-        tensor_input = preprocess(tensor_input, model_input_shape, np.float32)
-        # ruff: noqa: F841
-        tensor_output = self.model.run(None, {model_input_name: tensor_input})[0]
+        #model_input_name = self.model.get_inputs()[0].name
+        #model_input_shape = self.model.get_inputs()[0].shape
+        #tensor_input = preprocess(tensor_input, model_input_shape, np.float32)
+        #tensor_output = self.model.run(None, {model_input_name: tensor_input})[0]
 
         raise Exception(
             "No models are currently supported via onnx. See the docs for more info."
