@@ -25,7 +25,7 @@ class ONNXDetector(DetectionApi):
 
     def __init__(self, detector_config: ONNXDetectorConfig):
         try:
-            import onnxruntime
+            import onnxruntime as ort
 
             logger.info("ONNX: loaded onnxruntime module")
         except ModuleNotFoundError:
@@ -36,7 +36,7 @@ class ONNXDetector(DetectionApi):
 
         path = detector_config.model.path
         logger.info(f"ONNX: loading {detector_config.model.path}")
-        self.model = onnxruntime.InferenceSession(path)
+        self.model = ort.InferenceSession(path, providers=ort.get_available_providers())
 
         self.h = detector_config.model.height
         self.w = detector_config.model.width
@@ -50,18 +50,20 @@ class ONNXDetector(DetectionApi):
         model_input_name = self.model.get_inputs()[0].name
         model_input_shape = self.model.get_inputs()[0].shape
 
-        tensor_input = cv2.dnn.blobFromImage(
-            tensor_input[0],
-            1.0,
-            (model_input_shape[3], model_input_shape[2]),
-            None,
-            swapRB=self.onnx_model_px == PixelFormatEnum.bgr,
-        ).astype(np.uint8)
+        # adjust input shape
+        if self.onnx_model_type == ModelTypeEnum.yolonas:
+            tensor_input = cv2.dnn.blobFromImage(
+                tensor_input[0],
+                1.0,
+                (model_input_shape[3], model_input_shape[2]),
+                None,
+                swapRB=self.onnx_model_px == PixelFormatEnum.bgr,
+            ).astype(np.uint8)
 
-        tensor_output = self.model.run(None, {model_input_name: tensor_input})[0]
+        tensor_output = self.model.run(None, {model_input_name: tensor_input})
 
         if self.onnx_model_type == ModelTypeEnum.yolonas:
-            predictions = tensor_output
+            predictions = tensor_output[0]
 
             detections = np.zeros((20, 6), np.float32)
 
@@ -80,6 +82,34 @@ class ONNXDetector(DetectionApi):
                     y_max / self.h,
                     x_max / self.w,
                 ]
+            return detections
+        elif self.onnx_model_type == ModelTypeEnum.ssd:
+            for item in tensor_output:
+                logger.info(f"tensor output item is {item}")
+
+            (scores, boxes, size, classes) = tensor_output
+
+            logger.info(f"there are {size[0]} items")
+            logger.info(f"there are {len(boxes[0])} boxes and {len(scores[0])} scores")
+
+            detections = np.zeros((20, 6), np.float32)
+
+            for i in range(0, int(size[0])):
+                if i == 20:
+                    break
+
+                class_id = classes[0][i]
+                (x, y, w, h) = boxes[0][1]
+                score = scores[0][i]
+                detections[i] = [
+                    int(class_id),
+                    float(score),
+                    y,
+                    x,
+                    y + h,
+                    x + w,
+                ]
+
             return detections
         else:
             raise Exception(
